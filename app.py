@@ -1,16 +1,15 @@
 import streamlit as st
 import yfinance as yf
 import pandas as pd
-import matplotlib.pyplot as plt
+import datetime
 
-# 1. ページの設定（デザインの土台）
+# ページの設定
 st.set_page_config(page_title="株式相関分析プロ", layout="wide")
 
-# サイドバーのデザイン設定
+# サイドバーの設定
 with st.sidebar:
     st.header("⚙️ 分析設定")
     
-    # 銘柄の選択機能
     stock_options = {
         "日本電信電話 (NTT)": "9432.T",
         "KDDI": "9433.T",
@@ -26,35 +25,54 @@ with st.sidebar:
         default=["日本電信電話 (NTT)", "KDDI"]
     )
     
-    # 期間の設定
-    years = st.slider("分析期間（年）", 1, 5, 2)
+    # 【新機能】カレンダーによる期間設定
+    today = datetime.date.today()
+    three_years_ago = today - datetime.timedelta(days=365*3)
+    
+    start_date = st.date_input("開始日", three_years_ago)
+    end_date = st.date_input("終了日", today)
 
-# メイン画面のタイトル
+# メメイン画面
 st.title("📊 株式・指数 相関分析プロ")
-st.caption(f"選択された銘柄の直近 {years} 年間の相関を可視化します")
 
 if st.button("分析を開始する", type="primary"):
     if len(selected_stocks) < 2:
         st.error("分析には2つ以上の銘柄を選んでください。")
+    elif start_date >= end_date:
+        st.error("開始日は終了日より前の日付を選択してください。")
     else:
         with st.spinner("データを取得中..."):
-            # データの取得
             tickers = [stock_options[s] for s in selected_stocks]
-            end_date = pd.Timestamp.now()
-            start_date = end_date - pd.DateOffset(years=years)
             
-            data = yf.download(tickers, start=start_date, end=end_date)['Adj Close']
+            # yfinanceの最新仕様に合わせたデータ取得
+            df = yf.download(tickers, start=start_date, end=end_date)
             
-            # グラフの描画
-            st.subheader("📈 株価推移（正規化）")
-            # 比較しやすくするために開始点を100として計算
-            norm_data = (data / data.iloc[0] * 100)
-            st.line_chart(norm_data)
+            # データのクリーニング（エラー対策）
+            if 'Close' in df.columns:
+                data = df['Close']
+            else:
+                data = df
             
-            # 相関係数の計算
-            st.subheader("🔢 相関係数")
-            corr = data.corr()
-            st.write("1に近いほど同じ動き、-1に近いほど逆の動きをします。")
-            st.dataframe(corr.style.background_gradient(cmap='RdYlGn'))
-            
-            st.balloons() # 成功の演出
+            if data.empty:
+                st.warning("指定された期間のデータが見つかりませんでした。")
+            else:
+                # 1. 株価推移グラフ
+                st.subheader("📈 株価推移（正規化）")
+                st.info("開始時点を100として比較しています。マウスを乗せると詳細が見れます。")
+                norm_data = (data / data.iloc[0] * 100)
+                st.line_chart(norm_data)
+                
+                # 2. 相関係数の表示
+                st.subheader("🔢 相関係数テーブル")
+                corr = data.corr()
+                st.dataframe(corr.style.background_gradient(cmap='RdYlGn').format("{:.2f}"))
+                
+                # 3. データのダウンロード機能
+                csv = data.to_csv().encode('utf-8-sig')
+                st.download_button(
+                    label="CSV形式でデータを保存",
+                    data=csv,
+                    file_name=f"stock_analysis_{today}.csv",
+                    mime='text/csv',
+                )
+                st.balloons()
