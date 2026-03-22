@@ -16,7 +16,7 @@ def get_historical_news(keyword, start_date, end_date):
     feed = feedparser.parse(url)
     return feed.entries[:8]
 
-# 配当情報を取得する関数（表示形式を修正）
+# 配当情報を取得する関数（利回りの計算を修正）
 def get_dividend_info(tickers):
     div_data = []
     for t in tickers:
@@ -25,9 +25,15 @@ def get_dividend_info(tickers):
             ex_div_epoch = info.get('exDividendDate')
             ex_div_date = datetime.datetime.fromtimestamp(ex_div_epoch).date() if ex_div_epoch else "未定"
             
-            # 利回りの計算（0.0334 -> 3.34 に変換）
-            raw_yield = info.get('dividendYield')
-            display_yield = raw_yield * 100 if raw_yield else 0
+            # 【修正点】raw_yieldが既に％単位の数値（例：3.34）で来ているケースに対応
+            raw_yield = info.get('dividendYield', 0)
+            if raw_yield is None: raw_yield = 0
+            
+            # yfinanceの仕様により、0.0334で来る場合と3.34で来る場合があるため調整
+            if raw_yield < 0.2: # 0.2(20%)未満なら、0.0334形式と判断して100倍する
+                display_yield = raw_yield * 100
+            else: # それ以上なら、既に3.34形式と判断してそのまま使う
+                display_yield = raw_yield
             
             div_data.append({
                 "銘柄": t,
@@ -39,7 +45,7 @@ def get_dividend_info(tickers):
             continue
     return pd.DataFrame(div_data)
 
-# --- サイドバーの設定 (中身は同じなので省略気味に記載しますが、全コード貼り付けてOKです) ---
+# --- サイドバー設定 ---
 with st.sidebar:
     st.header("⚙️ 分析設定")
     st.subheader("銘柄を追加")
@@ -91,15 +97,14 @@ with tab2:
             if not div_df.empty:
                 div_df = div_df.sort_values("次回権利落ち日(予定)", ascending=True)
                 
-                # 【ここがポイント！】表示形式を整える（小数点2桁など）
+                # 表示形式の適用
                 formatted_df = div_df.style.format({
                     "配当利回り(%)": "{:.2f}%",
                     "現在の株価": "{:,.1f}円"
                 })
                 
                 st.write("※権利落ち日の**前営業日**までに株を保有する必要があります。")
-                st.table(formatted_df) # スタイルを適用したテーブルを表示
-                
+                st.table(formatted_df)
                 st.info("💡 権利落ち日とは：この日に株を買っても配当はもらえません。前日までに購入しましょう。")
     else:
         st.write("銘柄を選択してください。")
