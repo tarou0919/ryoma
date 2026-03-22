@@ -2,109 +2,80 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import datetime
-import feedparser
-import urllib.parse
 
 # ページの設定
-st.set_page_config(page_title="株式分析プロ", layout="wide")
+st.set_page_config(page_title="配当3案同時比較ツール", layout="wide")
 
-# ニュース取得関数
-def get_historical_news(keyword, start_date, end_date):
-    query = f"{keyword} after:{start_date} before:{end_date}"
-    encoded_query = urllib.parse.quote(query)
-    url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
-    feed = feedparser.parse(url)
-    return feed.entries[:8]
-
-# 配当情報を取得する関数（利回りの計算を修正）
-def get_dividend_info(tickers):
-    div_data = []
+# 配当情報を取得する関数
+def get_dividend_data(tickers):
+    data_list = []
     for t in tickers:
         try:
             info = yf.Ticker(t).info
-            ex_div_epoch = info.get('exDividendDate')
-            ex_div_date = datetime.datetime.fromtimestamp(ex_div_epoch).date() if ex_div_epoch else "未定"
-            
-            # 【修正点】raw_yieldが既に％単位の数値（例：3.34）で来ているケースに対応
             raw_yield = info.get('dividendYield', 0)
             if raw_yield is None: raw_yield = 0
             
-            # yfinanceの仕様により、0.0334で来る場合と3.34で来る場合があるため調整
-            if raw_yield < 0.2: # 0.2(20%)未満なら、0.0334形式と判断して100倍する
-                display_yield = raw_yield * 100
-            else: # それ以上なら、既に3.34形式と判断してそのまま使う
-                display_yield = raw_yield
+            # 利回りの単位調整
+            display_yield = raw_yield * 100 if raw_yield < 0.2 else raw_yield
+            price = info.get('currentPrice', info.get('regularMarketPrice', 0))
             
-            div_data.append({
+            data_list.append({
                 "銘柄": t,
-                "配当利回り(%)": display_yield,
-                "次回権利落ち日(予定)": ex_div_date,
-                "現在の株価": info.get('currentPrice', info.get('regularMarketPrice', 0))
+                "利回り": display_yield,
+                "株価": price
             })
         except:
             continue
-    return pd.DataFrame(div_data)
+    return data_list
 
-# --- サイドバー設定 ---
-with st.sidebar:
-    st.header("⚙️ 分析設定")
-    st.subheader("銘柄を追加")
-    new_code = st.text_input("証券コード (例: 7203, 9432)", "").strip()
-    if 'ticker_list' not in st.session_state:
-        st.session_state.ticker_list = ["9432.T", "9433.T", "1662.T"]
+# メイン画面
+st.title("⚖️ 高配当投資：3案同時シミュレーション")
+st.caption("3つの異なるポートフォリオ案を作成し、配当利回りや予想配当額を比較します。")
 
-    if st.button("リストに追加"):
-        if new_code:
-            if new_code.isdigit() and len(new_code) == 4: new_code += ".T"
-            if new_code not in st.session_state.ticker_list:
-                st.session_state.ticker_list.append(new_code)
-                st.rerun()
-    
-    selected_tickers = st.multiselect("分析対象", options=st.session_state.ticker_list, default=st.session_state.ticker_list)
-    st.subheader("期間設定")
-    today = datetime.date.today()
-    start_date = st.date_input("開始日", today - datetime.timedelta(days=365))
-    end_date = st.date_input("終了日", today)
-    st.subheader("ニュースワード")
-    news_keyword = st.text_input("キーワード", "日本 経済")
+# 3つのカラムを作成
+col1, col2, col3 = st.columns(3)
 
-    st.markdown("---")
-    st.header("📰 関連ニュース")
-    past_news = get_historical_news(news_keyword, start_date, end_date)
-    for entry in past_news:
-        st.markdown(f"**・[{entry.title}]({entry.link})**")
+# 各案の入力と表示
+plans = [
+    {"name": "案 A", "col": col1, "key": "plan_a", "default": ["9432.T", "9433.T"]},
+    {"name": "案 B", "col": col2, "key": "plan_b", "default": ["8058.T", "8001.T"]},
+    {"name": "案 C", "col": col3, "key": "plan_c", "default": ["1662.T", "8316.T"]}
+]
 
-# --- メイン画面 ---
-st.title("📊 株式・配当・ニュース 統合分析ツール")
-tab1, tab2 = st.tabs(["📈 株価・ニュース分析", "📅 配当カレンダー"])
+for plan in plans:
+    with plan["col"]:
+        st.subheader(f"📍 {plan['name']}")
+        
+        # 銘柄入力
+        ticker_input = st.text_area(
+            f"{plan['name']}の銘柄コード (カンマ区切り)", 
+            value=",".join(plan["default"]), 
+            key=f"input_{plan['key']}"
+        )
+        tickers = [t.strip() for t in ticker_input.split(",") if t.strip()]
+        
+        # 投資予算入力
+        budget = st.number_input(f"{plan['name']}の投資予算 (円)", min_value=0, value=1000000, step=100000, key=f"budget_{plan['key']}")
+        
+        if st.button(f"{plan['name']}を計算", key=f"btn_{plan['key']}"):
+            with st.spinner("データ取得中..."):
+                results = get_dividend_data(tickers)
+                if results:
+                    df = pd.DataFrame(results)
+                    avg_yield = df["利回り"].mean()
+                    est_dividend = budget * (avg_yield / 100)
+                    
+                    # 結果表示
+                    st.metric("平均利回り", f"{avg_yield:.2f}%")
+                    st.metric("年間配当予想", f"{est_dividend:,.0f} 円")
+                    
+                    # 内訳テーブル
+                    st.write("---")
+                    st.write("▼ 銘柄内訳")
+                    formatted_df = df.style.format({"利回り": "{:.2f}%", "株価": "{:,.1f}円"})
+                    st.table(formatted_df)
+                else:
+                    st.error("データが取得できませんでした。")
 
-with tab1:
-    if st.button("分析を実行", type="primary"):
-        with st.spinner("データ取得中..."):
-            df = yf.download(selected_tickers, start=start_date, end=end_date)
-            data = df['Close'] if isinstance(df.columns, pd.MultiIndex) else df[['Close']]
-            if not data.empty:
-                st.subheader("正規化比較（100基準）")
-                st.line_chart(data / data.iloc[0] * 100)
-                st.subheader("相関係数")
-                st.dataframe(data.corr().style.background_gradient(cmap='RdYlGn').format("{:.2f}"))
-
-with tab2:
-    st.header("📅 配当情報・スケジュール")
-    if selected_tickers:
-        with st.spinner("配当データ取得中..."):
-            div_df = get_dividend_info(selected_tickers)
-            if not div_df.empty:
-                div_df = div_df.sort_values("次回権利落ち日(予定)", ascending=True)
-                
-                # 表示形式の適用
-                formatted_df = div_df.style.format({
-                    "配当利回り(%)": "{:.2f}%",
-                    "現在の株価": "{:,.1f}円"
-                })
-                
-                st.write("※権利落ち日の**前営業日**までに株を保有する必要があります。")
-                st.table(formatted_df)
-                st.info("💡 権利落ち日とは：この日に株を買っても配当はもらえません。前日までに購入しましょう。")
-    else:
-        st.write("銘柄を選択してください。")
+st.write("---")
+st.info("💡 銘柄コードは '7203.T' のように入力してください。数字4桁の場合は、後で自動補完機能を追加することも可能です。")
