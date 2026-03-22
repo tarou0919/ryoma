@@ -2,80 +2,112 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import datetime
+import feedparser
+import urllib.parse
+import plotly.express as px  # 円グラフ用
 
 # ページの設定
-st.set_page_config(page_title="配当3案同時比較ツール", layout="wide")
+st.set_page_config(page_title="株式投資・資産管理プロ", layout="wide")
 
-# 配当情報を取得する関数
-def get_dividend_data(tickers):
-    data_list = []
+# ニュース取得関数
+def get_historical_news(keyword, start_date, end_date):
+    query = f"{keyword} after:{start_date} before:{end_date}"
+    encoded_query = urllib.parse.quote(query)
+    url = f"https://news.google.com/rss/search?q={encoded_query}&hl=ja&gl=JP&ceid=JP:ja"
+    return feedparser.parse(url).entries[:5]
+
+# 詳細情報を取得する関数
+def get_stock_details(tickers):
+    details = []
     for t in tickers:
         try:
             info = yf.Ticker(t).info
-            raw_yield = info.get('dividendYield', 0)
-            if raw_yield is None: raw_yield = 0
-            
-            # 利回りの単位調整
-            display_yield = raw_yield * 100 if raw_yield < 0.2 else raw_yield
-            price = info.get('currentPrice', info.get('regularMarketPrice', 0))
-            
-            data_list.append({
+            details.append({
                 "銘柄": t,
-                "利回り": display_yield,
-                "株価": price
+                "名称": info.get('longName', t),
+                "セクター": info.get('sector', 'その他'),
+                "現在値": info.get('currentPrice', info.get('regularMarketPrice', 0)),
+                "配当利回り": (info.get('dividendYield', 0) or 0) * 100
             })
-        except:
-            continue
-    return data_list
+        except: continue
+    return pd.DataFrame(details)
+
+# サイドバー設定
+with st.sidebar:
+    st.header("⚙️ 設定・銘柄管理")
+    new_code = st.text_input("証券コード (例: 7203, 9432)", "").strip()
+    if 'ticker_list' not in st.session_state:
+        st.session_state.ticker_list = ["9432.T", "9433.T", "8058.T"]
+    
+    if st.button("リストに追加"):
+        if new_code:
+            if new_code.isdigit() and len(new_code) == 4: new_code += ".T"
+            if new_code not in st.session_state.ticker_list:
+                st.session_state.ticker_list.append(new_code)
+                st.rerun()
+
+    selected_tickers = st.multiselect("表示対象", options=st.session_state.ticker_list, default=st.session_state.ticker_list)
+    
+    st.subheader("期間・ニュース設定")
+    today = datetime.date.today()
+    start_date = st.date_input("分析開始日", today - datetime.timedelta(days=365))
+    news_keyword = st.text_input("ニュースワード", "日本 経済")
 
 # メイン画面
-st.title("⚖️ 高配当投資：3案同時シミュレーション")
-st.caption("3つの異なるポートフォリオ案を作成し、配当利回りや予想配当額を比較します。")
+st.title("📊 株式総合管理システム")
 
-# 3つのカラムを作成
-col1, col2, col3 = st.columns(3)
+tab1, tab2, tab3 = st.tabs(["📈 株価分析", "💰 ポートフォリオ管理", "📰 経済ニュース"])
 
-# 各案の入力と表示
-plans = [
-    {"name": "案 A", "col": col1, "key": "plan_a", "default": ["9432.T", "9433.T"]},
-    {"name": "案 B", "col": col2, "key": "plan_b", "default": ["8058.T", "8001.T"]},
-    {"name": "案 C", "col": col3, "key": "plan_c", "default": ["1662.T", "8316.T"]}
-]
+# 銘柄詳細の事前取得
+if selected_tickers:
+    stock_df = get_stock_details(selected_tickers)
 
-for plan in plans:
-    with plan["col"]:
-        st.subheader(f"📍 {plan['name']}")
+with tab1:
+    if st.button("分析を実行", type="primary"):
+        df = yf.download(selected_tickers, start=start_date, end=today)
+        data = df['Close'] if isinstance(df.columns, pd.MultiIndex) else df[['Close']]
+        if not data.empty:
+            st.subheader("正規化比較（100基準）")
+            st.line_chart(data / data.iloc[0] * 100)
+            st.subheader("相関係数")
+            st.dataframe(data.corr().style.background_gradient(cmap='RdYlGn').format("{:.2f}"))
+
+with tab2:
+    st.header("💰 資産状況とセクター配分")
+    if not stock_df.empty:
+        # 入力エリア
+        st.subheader("保有状況の入力")
+        portfolio_input = []
+        col1, col2, col3 = st.columns(3)
+        for i, row in stock_df.iterrows():
+            with col1: qty = st.number_input(f"{row['銘柄']} 保有数", min_value=0, step=100, key=f"q_{row['銘柄']}")
+            with col2: price = st.number_input(f"{row['銘柄']} 取得単価", min_value=0.0, key=f"p_{row['銘柄']}")
+            current_val = qty * row['現在値']
+            profit = (row['現在値'] - price) * qty if price > 0 else 0
+            portfolio_input.append({"銘柄": row['銘柄'], "セクター": row['セクター'], "現在値": row['現在値'], "取得単価": price, "保有数": qty, "評価額": current_val, "損益": profit})
         
-        # 銘柄入力
-        ticker_input = st.text_area(
-            f"{plan['name']}の銘柄コード (カンマ区切り)", 
-            value=",".join(plan["default"]), 
-            key=f"input_{plan['key']}"
-        )
-        tickers = [t.strip() for t in ticker_input.split(",") if t.strip()]
+        p_df = pd.DataFrame(portfolio_input)
         
-        # 投資予算入力
-        budget = st.number_input(f"{plan['name']}の投資予算 (円)", min_value=0, value=1000000, step=100000, key=f"budget_{plan['key']}")
-        
-        if st.button(f"{plan['name']}を計算", key=f"btn_{plan['key']}"):
-            with st.spinner("データ取得中..."):
-                results = get_dividend_data(tickers)
-                if results:
-                    df = pd.DataFrame(results)
-                    avg_yield = df["利回り"].mean()
-                    est_dividend = budget * (avg_yield / 100)
-                    
-                    # 結果表示
-                    st.metric("平均利回り", f"{avg_yield:.2f}%")
-                    st.metric("年間配当予想", f"{est_dividend:,.0f} 円")
-                    
-                    # 内訳テーブル
-                    st.write("---")
-                    st.write("▼ 銘柄内訳")
-                    formatted_df = df.style.format({"利回り": "{:.2f}%", "株価": "{:,.1f}円"})
-                    st.table(formatted_df)
-                else:
-                    st.error("データが取得できませんでした。")
+        # 損益サマリー
+        total_val = p_df['評価額'].sum()
+        total_profit = p_df['損益'].sum()
+        c1, c2 = st.columns(2)
+        c1.metric("総評価額", f"{total_val:,.0f}円")
+        c2.metric("合計損益", f"{total_profit:,.0f}円", delta=f"{total_profit:,.0f}円")
 
-st.write("---")
-st.info("💡 銘柄コードは '7203.T' のように入力してください。数字4桁の場合は、後で自動補完機能を追加することも可能です。")
+        # セクター別円グラフ
+        st.subheader("業種別（セクター）配分")
+        if total_val > 0:
+            fig = px.pie(p_df[p_df['保有数'] > 0], values='評価額', names='セクター', hole=0.4)
+            st.plotly_chart(fig)
+        else:
+            st.info("保有数を入力するとセクター配分が表示されます。")
+        
+        st.dataframe(p_df.style.format({"現在値": "{:,.1f}", "取得単価": "{:,.1f}", "評価額": "{:,.0f}", "損益": "{:,.0f}"}))
+
+with tab3:
+    st.header("📰 関連ニュース")
+    news = get_historical_news(news_keyword, start_date, today)
+    for entry in news:
+        st.markdown(f"**・[{entry.title}]({entry.link})**")
+        st.caption(f"{entry.published[:16]}")
